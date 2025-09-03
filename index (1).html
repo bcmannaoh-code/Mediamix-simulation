@@ -1,0 +1,715 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>유폰 미디어믹스 대시보드</title>
+  <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.20.6/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useMemo, useState, useEffect } = React;
+
+    function UphoneMediaMixDashboard() {
+      const initialMediaSettings = {
+        naver: {
+          name: "네이버 (최대 고정)",
+          adSpend: 40566000,
+          baseAdSpend: 40566000,
+          cpc: 6039,
+          baseCpc: 6039,
+          cpm: 370916,
+          flRate: 7.67,
+          flCompleteRate: 77.39,
+          purchaseRate: 32.87,
+        },
+        pmax: {
+          name: "PMax",
+          adSpend: 24000000,
+          baseAdSpend: 24000000,
+          cpc: 833,
+          baseCpc: 833,
+          cpm: 12500,
+          flRate: 0.58,
+          flCompleteRate: 76.24,
+          purchaseRate: 28.57,
+        },
+        meta: {
+          name: "Meta",
+          adSpend: 38000000,
+          baseAdSpend: 38000000,
+          cpc: 2800,
+          baseCpc: 2800,
+          cpm: 14000,
+          flRate: 2.80,
+          flCompleteRate: 62.70,
+          purchaseRate: 17.0,
+        },
+        googlesa: {
+          name: "구글SA",
+          adSpend: 5000000,
+          baseAdSpend: 5000000,
+          cpc: 3636,
+          baseCpc: 3636,
+          cpm: 88235,
+          flRate: 4.29,
+          flCompleteRate: 77.39,
+          purchaseRate: 32.87,
+        },
+        applesearch: {
+          name: "애플서치",
+          adSpend: 5000000,
+          baseAdSpend: 5000000,
+          cpc: 7696,
+          baseCpc: 7696,
+          cpm: 94616,
+          flRate: 4.92,
+          flCompleteRate: 39.07,
+          purchaseRate: 15.48,
+        },
+        ac: {
+          name: "AC",
+          adSpend: 20000000,
+          baseAdSpend: 20000000,
+          cpc: 861,
+          baseCpc: 861,
+          cpm: 15500,
+          flRate: 0.86,
+          flCompleteRate: 39.07,
+          purchaseRate: 15.48,
+        },
+      };
+
+      const [totalBudget, setTotalBudget] = useState(132566000);
+      const [optimizationMode, setOptimizationMode] = useState("manual");
+      const [errors, setErrors] = useState({});
+      const [versionHistory, setVersionHistory] = useState([]);
+      const [selectedVersion, setSelectedVersion] = useState(null);
+      const [showSaveModal, setShowSaveModal] = useState(false);
+      const [versionName, setVersionName] = useState("");
+
+      const [mediaSettings, setMediaSettings] = useState(JSON.parse(JSON.stringify(initialMediaSettings)));
+
+      const calcActualCpc = (key, spend, baseCpc, baseSpend) => {
+        if (key !== "googlesa") return baseCpc;
+        const ratio = baseSpend > 0 ? spend / baseSpend : 1;
+        const worsening = ratio > 1 ? 1 + 0.3 * (ratio - 1) : 1;
+        return Math.round(baseCpc * worsening);
+      };
+
+      const updateMedia = (key, field, value) => {
+        setMediaSettings((prev) => {
+          const isNaverSpend = key === "naver" && field === "adSpend";
+          let nextVal = Number(value) || 0;
+          let error = null;
+
+          if (field === "adSpend") {
+            nextVal = Math.max(0, nextVal);
+            if (isNaverSpend && nextVal > prev.naver.baseAdSpend) {
+              nextVal = prev.naver.baseAdSpend;
+              error = `네이버 광고비는 ${prev.naver.baseAdSpend.toLocaleString()}원을 초과할 수 없습니다.`;
+            }
+          } else if (field === "cpc" || field === "cpm") {
+            nextVal = Math.max(0, nextVal);
+          } else if (field === "flRate" || field === "flCompleteRate" || field === "purchaseRate") {
+            nextVal = Math.max(0, Math.min(100, nextVal));
+          }
+
+          const updated = {
+            ...prev,
+            [key]: {
+              ...prev[key],
+              [field]: nextVal,
+            },
+          };
+
+          if (field === "cpc" && key !== "googlesa") {
+            updated[key].baseCpc = nextVal;
+          }
+          if (key === "googlesa" && field === "adSpend") {
+            updated[key].cpc = calcActualCpc("googlesa", nextVal, prev[key].baseCpc, prev[key].baseAdSpend);
+          }
+
+          // 자동 버전 저장 제거: 수동 저장으로 변경
+          setErrors((prev) => ({ ...prev, [`${key}_${field}`]: error }));
+          return updated;
+        });
+        setOptimizationMode("manual");
+      };
+
+      const optimize = (mode) => {
+        const naverMax = mediaSettings.naver.baseAdSpend;
+        const naverBudget = Math.min(mediaSettings.naver.adSpend, naverMax);
+        const available = totalBudget - naverBudget;
+
+        const keys = ["pmax", "meta", "googlesa", "applesearch", "ac"];
+        const effs = keys.map((k) => {
+          const m = mediaSettings[k];
+          const cpc = calcActualCpc(k, m.adSpend, m.baseCpc, m.baseAdSpend);
+          const clicksPerWon = 1 / cpc;
+          const flPerWon = clicksPerWon * (m.flRate / 100);
+          const flCompletePerWon = flPerWon * (m.flCompleteRate / 100);
+          const purchasePerWon = flCompletePerWon * (m.purchaseRate / 100);
+          return { key: k, eff: mode === "fl" ? flPerWon : purchasePerWon };
+        });
+
+        const sumEff = effs.reduce((s, e) => s + e.eff, 0);
+        const next = JSON.parse(JSON.stringify(mediaSettings));
+        next.naver.adSpend = naverBudget;
+
+        let remaining = available;
+        effs.sort((a, b) => b.eff - a.eff).forEach((e, idx, arr) => {
+          if (remaining <= 0) {
+            next[e.key].adSpend = 0;
+            return;
+          }
+          let alloc = 0;
+          if (idx === arr.length - 1) {
+            alloc = remaining;
+          } else {
+            const ratio = sumEff > 0 ? e.eff / sumEff : 1 / arr.length;
+            alloc = Math.round(available * ratio);
+            if (alloc > remaining) alloc = remaining;
+          }
+          next[e.key].adSpend = alloc;
+          if (e.key === "googlesa") {
+            next[e.key].cpc = calcActualCpc("googlesa", alloc, next[e.key].baseCpc, next[e.key].baseAdSpend);
+          }
+          remaining -= alloc;
+        });
+
+        setMediaSettings(next);
+        // 자동 버전 저장 제거: 수동 저장으로 변경
+        setOptimizationMode(mode);
+        setErrors({});
+      };
+
+      const saveVersion = () => {
+        if (!versionName.trim()) {
+          alert("버전 이름을 입력해주세요.");
+          return;
+        }
+        setVersionHistory((prevHistory) => {
+          const newVersion = {
+            id: Date.now(),
+            label: versionName,
+            data: JSON.parse(JSON.stringify(mediaSettings)),
+          };
+          return [...prevHistory, newVersion].slice(-10); // 최대 10개 버전 저장
+        });
+        setShowSaveModal(false);
+        setVersionName("");
+      };
+
+      const resetToInitial = () => {
+        setMediaSettings(JSON.parse(JSON.stringify(initialMediaSettings)));
+        setOptimizationMode("manual");
+        setErrors({});
+      };
+
+      const calculated = useMemo(() => {
+        const out = {};
+        Object.keys(mediaSettings).forEach((key) => {
+          const m = mediaSettings[key];
+          const cpc = key === "googlesa" ? calcActualCpc(key, m.adSpend, m.baseCpc, m.baseAdSpend) : m.cpc;
+
+          const impressions = Math.round((m.adSpend / m.cpm) * 1000);
+          const clicks = Math.round(m.adSpend / cpc);
+          const ctr = impressions > 0 ? (clicks / impressions) * 100 : 0;
+          const fl = Math.round(clicks * (m.flRate / 100));
+          const cpa = fl > 0 ? Math.round(m.adSpend / fl) : 0;
+          const flComplete = Math.round(fl * (m.flCompleteRate / 100));
+          const purchases = Math.round(flComplete * (m.purchaseRate / 100));
+          const cps = purchases > 0 ? Math.round(m.adSpend / purchases) : 0;
+
+          out[key] = { ...m, cpc, impressions, clicks, ctr, fl, cpa, flComplete, purchases, cps };
+        });
+        return out;
+      }, [mediaSettings]);
+
+      const totals = useMemo(() => {
+        const vals = Object.values(calculated);
+        const adSpend = vals.reduce((s, v) => s + v.adSpend, 0);
+        const impressions = vals.reduce((s, v) => s + v.impressions, 0);
+        const clicks = vals.reduce((s, v) => s + v.clicks, 0);
+        const fl = vals.reduce((s, v) => s + v.fl, 0);
+        const flComplete = vals.reduce((s, v) => s + v.flComplete, 0);
+        const purchases = vals.reduce((s, v) => s + v.purchases, 0);
+
+        return {
+          adSpend,
+          impressions,
+          clicks,
+          ctr: impressions > 0 ? ((clicks / impressions) * 100).toFixed(2) : "0.00",
+          fl,
+          cpa: fl > 0 ? Math.round(adSpend / fl) : 0,
+          flComplete,
+          flCompleteRate: fl > 0 ? ((flComplete / fl) * 100).toFixed(1) : "0.0",
+          purchases,
+          purchaseRate: flComplete > 0 ? ((purchases / flComplete) * 100).toFixed(1) : "0.0",
+          cps: purchases > 0 ? Math.round(adSpend / purchases) : 0,
+        };
+      }, [calculated]);
+
+      // 파이 차트 렌더링
+      useEffect(() => {
+        const ctx = document.getElementById("adSpendChart")?.getContext("2d");
+        if (!ctx) return;
+
+        const chart = new Chart(ctx, {
+          type: "pie",
+          data: {
+            labels: ["네이버", "PMax", "Meta", "구글SA", "애플서치", "AC"],
+            datasets: [{
+              label: "광고비 분포",
+              data: [
+                calculated.naver.adSpend,
+                calculated.pmax.adSpend,
+                calculated.meta.adSpend,
+                calculated.googlesa.adSpend,
+                calculated.applesearch.adSpend,
+                calculated.ac.adSpend,
+              ],
+              backgroundColor: ["#FF6384", "#36A2EB", "#FFCE56", "#4BC0C0", "#9966FF", "#FF9F40"],
+            }],
+          },
+          options: {
+            responsive: true,
+            plugins: {
+              legend: { position: "top" },
+              title: { display: true, text: "채널별 광고비 분포" },
+            },
+          },
+        });
+
+        return () => chart.destroy();
+      }, [calculated]);
+
+      // 구매수 막대그래프 렌더링
+      useEffect(() => {
+        const ctx = document.getElementById("purchasesChart")?.getContext("2d");
+        if (!ctx) return;
+
+        const chart = new Chart(ctx, {
+          type: "bar",
+          data: {
+            labels: ["네이버", "PMax", "Meta", "구글SA", "애플서치", "AC"],
+            datasets: [{
+              label: "구매수",
+              data: [
+                calculated.naver.purchases,
+                calculated.pmax.purchases,
+                calculated.meta.purchases,
+                calculated.googlesa.purchases,
+                calculated.applesearch.purchases,
+                calculated.ac.purchases,
+              ],
+              backgroundColor: "#36A2EB",
+            }],
+          },
+          options: {
+            responsive: true,
+            plugins: {
+              legend: { position: "top" },
+              title: { display: true, text: "채널별 구매수" },
+            },
+            scales: {
+              y: { beginAtZero: true },
+            },
+          },
+        });
+
+        return () => chart.destroy();
+      }, [calculated]);
+
+      // FL수 막대그래프 렌더링
+      useEffect(() => {
+        const ctx = document.getElementById("flChart")?.getContext("2d");
+        if (!ctx) return;
+
+        const chart = new Chart(ctx, {
+          type: "bar",
+          data: {
+            labels: ["네이버", "PMax", "Meta", "구글SA", "애플서치", "AC"],
+            datasets: [{
+              label: "FL수",
+              data: [
+                calculated.naver.fl,
+                calculated.pmax.fl,
+                calculated.meta.fl,
+                calculated.googlesa.fl,
+                calculated.applesearch.fl,
+                calculated.ac.fl,
+              ],
+              backgroundColor: "#FF6384",
+            }],
+          },
+          options: {
+            responsive: true,
+            plugins: {
+              legend: { position: "top" },
+              title: { display: true, text: "채널별 FL수" },
+            },
+            scales: {
+              y: { beginAtZero: true },
+            },
+          },
+        });
+
+        return () => chart.destroy();
+      }, [calculated]);
+
+      return (
+        <div className="p-6 max-w-7xl mx-auto">
+          <h1 className="text-2xl font-bold mb-4">유폰 9월 미디어믹스 대시보드</h1>
+          {/* 차트 영역 */}
+          <div className="grid md:grid-cols-3 gap-4 mb-6">
+            <div>
+              <canvas id="adSpendChart" className="max-h-80"></canvas>
+            </div>
+            <div>
+              <canvas id="purchasesChart" className="max-h-80"></canvas>
+            </div>
+            <div>
+              <canvas id="flChart" className="max-h-80"></canvas>
+            </div>
+          </div>
+          {/* 컨트롤 패널 */}
+          <div className="grid md:grid-cols-4 gap-3 mb-4">
+            <div>
+              <label className="text-sm">운영 모드</label>
+              <select
+                className="w-full p-2 border rounded"
+                value={optimizationMode}
+                onChange={(e) => setOptimizationMode(e.target.value)}
+              >
+                <option value="manual">수동</option>
+                <option value="fl">FL수 최대화</option>
+                <option value="purchase">구매수 최대화</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-sm">총 예산</label>
+              <input
+                type="number"
+                className="w-full p-2 border rounded"
+                value={totalBudget}
+                onChange={(e) => setTotalBudget(Math.max(0, Number(e.target.value) || 0))}
+              />
+            </div>
+            <div className="flex items-end gap-2">
+              <button
+                className="px-4 py-2 rounded bg-blue-600 text-white disabled:bg-gray-400"
+                onClick={() => (optimizationMode === "fl" ? optimize("fl") : optimizationMode === "purchase" ? optimize("purchase") : null)}
+                disabled={optimizationMode === "manual"}
+              >
+                최적화 실행
+              </button>
+              {optimizationMode !== "manual" && (
+                <button className="px-4 py-2 rounded border" onClick={() => setOptimizationMode("manual")}>
+                  수동 모드로 전환
+                </button>
+              )}
+            </div>
+            <div className="flex items-end gap-2">
+              <button className="px-4 py-2 rounded bg-green-600 text-white" onClick={() => setShowSaveModal(true)}>
+                버전 저장
+              </button>
+              <button className="px-4 py-2 rounded bg-red-600 text-white" onClick={resetToInitial}>
+                초기화
+              </button>
+            </div>
+          </div>
+          {/* 버전 저장 모달 */}
+          {showSaveModal && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+              <div className="bg-white p-4 rounded shadow-lg">
+                <label className="text-sm">버전 이름</label>
+                <input
+                  type="text"
+                  className="w-full p-2 border rounded mb-2"
+                  value={versionName}
+                  onChange={(e) => setVersionName(e.target.value)}
+                  placeholder="예: 테스트 버전 1"
+                />
+                <div className="flex gap-2">
+                  <button className="px-4 py-2 rounded bg-blue-600 text-white" onClick={saveVersion}>
+                    저장
+                  </button>
+                  <button className="px-4 py-2 rounded border" onClick={() => setShowSaveModal(false)}>
+                    취소
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+          {/* 버전 비교 선택 */}
+          <div className="mb-4">
+            <label className="text-sm">비교할 버전 선택</label>
+            <select
+              className="w-full p-2 border rounded"
+              value={selectedVersion || ""}
+              onChange={(e) => setSelectedVersion(e.target.value ? Number(e.target.value) : null)}
+            >
+              <option value="">현재 버전</option>
+              {versionHistory.map((version) => (
+                <option key={version.id} value={version.id}>{version.label}</option>
+              ))}
+            </select>
+          </div>
+          {/* 요약 지표 */}
+          <div className="grid md:grid-cols-6 gap-2 mb-4 text-sm">
+            <Card title="총 광고비" value={`${totals.adSpend.toLocaleString()}원`} />
+            <Card title="총 노출" value={totals.impressions.toLocaleString()} />
+            <Card title="총 클릭" value={totals.clicks.toLocaleString()} />
+            <Card title="총 CTR" value={`${totals.ctr}%`} />
+            <Card title="총 FL" value={`${totals.fl.toLocaleString()}건`} />
+            <Card title="총 구매" value={`${totals.purchases.toLocaleString()}건`} />
+          </div>
+          {/* 메인 테이블 */}
+          <div className="overflow-x-auto mb-6">
+            <table className="w-full text-sm border">
+              <thead>
+                <tr className="bg-gray-50">
+                  <Th>채널</Th>
+                  <Th>광고비</Th>
+                  <Th>CPC</Th>
+                  <Th>CPM</Th>
+                  <Th>FL Rate</Th>
+                  <Th>FL 완료율</Th>
+                  <Th>구매전환율</Th>
+                  <Th>노출</Th>
+                  <Th>클릭</Th>
+                  <Th>CTR</Th>
+                  <Th>FL</Th>
+                  <Th>CPA</Th>
+                  <Th>FL완료</Th>
+                  <Th>구매</Th>
+                  <Th>CPS</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.keys(calculated).map((key) => (
+                  <tr key={key} className="border-t">
+                    <Td bold>{calculated[key].name}</Td>
+                    <Td>
+                      {optimizationMode === "manual" ? (
+                        <>
+                          <input
+                            type="number"
+                            className="w-32 p-1 border rounded"
+                            value={calculated[key].adSpend}
+                            onChange={(e) => updateMedia(key, "adSpend", e.target.value)}
+                          />
+                          {errors[`${key}_adSpend`] && (
+                            <div className="text-[11px] text-red-500 mt-1">{errors[`${key}_adSpend`]}</div>
+                          )}
+                        </>
+                      ) : (
+                        calculated[key].adSpend.toLocaleString()
+                      )}
+                    </Td>
+                    <Td>
+                      {optimizationMode === "manual" ? (
+                        <input
+                          type="number"
+                          className="w-20 p-1 border rounded"
+                          value={calculated[key].cpc}
+                          onChange={(e) => updateMedia(key, "cpc", e.target.value)}
+                          disabled={key === "googlesa"}
+                        />
+                      ) : (
+                        calculated[key].cpc.toLocaleString()
+                      )}
+                    </Td>
+                    <Td>
+                      {optimizationMode === "manual" ? (
+                        <input
+                          type="number"
+                          className="w-20 p-1 border rounded"
+                          value={calculated[key].cpm}
+                          onChange={(e) => updateMedia(key, "cpm", e.target.value)}
+                        />
+                      ) : (
+                        calculated[key].cpm.toLocaleString()
+                      )}
+                    </Td>
+                    <Td>
+                      {optimizationMode === "manual" ? (
+                        <input
+                          type="number"
+                          className="w-20 p-1 border rounded"
+                          value={calculated[key].flRate}
+                          onChange={(e) => updateMedia(key, "flRate", e.target.value)}
+                        />
+                      ) : (
+                        calculated[key].flRate.toFixed(2)
+                      )}
+                    </Td>
+                    <Td>
+                      {optimizationMode === "manual" ? (
+                        <input
+                          type="number"
+                          className="w-20 p-1 border rounded"
+                          value={calculated[key].flCompleteRate}
+                          onChange={(e) => updateMedia(key, "flCompleteRate", e.target.value)}
+                        />
+                      ) : (
+                        calculated[key].flCompleteRate.toFixed(2)
+                      )}
+                    </Td>
+                    <Td>
+                      {optimizationMode === "manual" ? (
+                        <input
+                          type="number"
+                          className="w-20 p-1 border rounded"
+                          value={calculated[key].purchaseRate}
+                          onChange={(e) => updateMedia(key, "purchaseRate", e.target.value)}
+                        />
+                      ) : (
+                        calculated[key].purchaseRate.toFixed(2)
+                      )}
+                    </Td>
+                    <Td>{calculated[key].impressions.toLocaleString()}</Td>
+                    <Td>{calculated[key].clicks.toLocaleString()}</Td>
+                    <Td>{calculated[key].ctr.toFixed(2)}%</Td>
+                    <Td>{calculated[key].fl.toLocaleString()}</Td>
+                    <Td>{calculated[key].cpa.toLocaleString()}원</Td>
+                    <Td>{calculated[key].flComplete.toLocaleString()}</Td>
+                    <Td>{calculated[key].purchases.toLocaleString()}</Td>
+                    <Td>{calculated[key].cps.toLocaleString()}원</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {/* 버전 비교 테이블 */}
+          {selectedVersion && (
+            <div className="overflow-x-auto">
+              <h2 className="text-lg font-bold mb-2">선택한 버전 데이터 ({versionHistory.find(v => v.id === selectedVersion)?.label})</h2>
+              <table className="w-full text-sm border">
+                <thead>
+                  <tr className="bg-gray-50">
+                    <Th>채널</Th>
+                    <Th>광고비</Th>
+                    <Th>CPC</Th>
+                    <Th>CPM</Th>
+                    <Th>FL Rate</Th>
+                    <Th>FL 완료율</Th>
+                    <Th>구매전환율</Th>
+                    <Th>노출</Th>
+                    <Th>클릭</Th>
+                    <Th>CTR</Th>
+                    <Th>FL</Th>
+                    <Th>CPA</Th>
+                    <Th>FL완료</Th>
+                    <Th>구매</Th>
+                    <Th>CPS</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.keys(versionHistory.find(v => v.id === selectedVersion)?.data || {}).map((key) => {
+                    const m = versionHistory.find(v => v.id === selectedVersion).data[key];
+                    const cpc = key === "googlesa" ? calcActualCpc(key, m.adSpend, m.baseCpc, m.baseAdSpend) : m.cpc;
+                    const impressions = Math.round((m.adSpend / m.cpm) * 1000);
+                    const clicks = Math.round(m.adSpend / cpc);
+                    const ctr = impressions > 0 ? (clicks / impressions) * 100 : 0;
+                    const fl = Math.round(clicks * (m.flRate / 100));
+                    const cpa = fl > 0 ? Math.round(m.adSpend / fl) : 0;
+                    const flComplete = Math.round(fl * (m.flCompleteRate / 100));
+                    const purchases = Math.round(flComplete * (m.purchaseRate / 100));
+                    const cps = purchases > 0 ? Math.round(m.adSpend / purchases) : 0;
+
+                    return (
+                      <tr key={key} className="border-t">
+                        <Td bold>{m.name}</Td>
+                        <Td>{m.adSpend.toLocaleString()}</Td>
+                        <Td>{cpc.toLocaleString()}</Td>
+                        <Td>{m.cpm.toLocaleString()}</Td>
+                        <Td>{m.flRate.toFixed(2)}</Td>
+                        <Td>{m.flCompleteRate.toFixed(2)}</Td>
+                        <Td>{m.purchaseRate.toFixed(2)}</Td>
+                        <Td>{impressions.toLocaleString()}</Td>
+                        <Td>{clicks.toLocaleString()}</Td>
+                        <Td>{ctr.toFixed(2)}%</Td>
+                        <Td>{fl.toLocaleString()}</Td>
+                        <Td>{cpa.toLocaleString()}원</Td>
+                        <Td>{flComplete.toLocaleString()}</Td>
+                        <Td>{purchases.toLocaleString()}</Td>
+                        <Td>{cps.toLocaleString()}원</Td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function Card({ title, value }) {
+      return (
+        <div className="p-3 border rounded bg-white">
+          <div className="text-gray-500 text-xs">{title}</div>
+          <div className="font-semibold">{value}</div>
+        </div>
+      );
+    }
+
+    function Th({ children }) {
+      return <th className="p-2 text-left border-r last:border-r-0">{children}</th>;
+    }
+
+    function Td({ children, bold = false }) {
+      return <td className={`p-2 border-r last:border-r-0 ${bold ? "font-semibold" : ""}`}>{children}</td>;
+    }
+
+    ReactDOM.render(<UphoneMediaMixDashboard />, document.getElementById("root"));
+  </script>
+</body>
+</html>
