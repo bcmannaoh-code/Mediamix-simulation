@@ -1,43 +1,4 @@
-<script type="text/javascript">
-        var gk_isXlsx = false;
-        var gk_xlsxFileLookup = {};
-        var gk_fileData = {};
-        function filledCell(cell) {
-          return cell !== '' && cell != null;
-        }
-        function loadFileData(filename) {
-        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
-            try {
-                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
-                var firstSheetName = workbook.SheetNames[0];
-                var worksheet = workbook.Sheets[firstSheetName];
-
-                // Convert sheet to JSON to filter blank rows
-                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
-                // Filter out blank rows (rows where all cells are empty, null, or undefined)
-                var filteredData = jsonData.filter(row => row.some(filledCell));
-
-                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
-                var headerRowIndex = filteredData.findIndex((row, index) =>
-                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
-                );
-                // Fallback
-                if (headerRowIndex === -1 || headerRowIndex > 25) {
-                  headerRowIndex = 0;
-                }
-
-                // Convert filtered JSON back to CSV
-                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
-                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
-                return csv;
-            } catch (e) {
-                console.error(e);
-                return "";
-            }
-        }
-        return gk_fileData[filename] || "";
-        }
-        </script><!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
@@ -174,7 +135,6 @@
             updated[key].cpc = calcActualCpc("googlesa", nextVal, prev[key].baseCpc, prev[key].baseAdSpend);
           }
 
-          // 자동 버전 저장 제거: 수동 저장으로 변경
           setErrors((prev) => ({ ...prev, [`${key}_${field}`]: error }));
           return updated;
         });
@@ -223,7 +183,6 @@
         });
 
         setMediaSettings(next);
-        // 자동 버전 저장 제거: 수동 저장으로 변경
         setOptimizationMode(mode);
         setErrors({});
       };
@@ -294,6 +253,80 @@
           cps: purchases > 0 ? Math.round(adSpend / purchases) : 0,
         };
       }, [calculated]);
+
+      // 선택된 버전 계산
+      const selectedCalculated = useMemo(() => {
+        if (!selectedVersion) return null;
+        const selectedData = versionHistory.find(v => v.id === selectedVersion)?.data;
+        if (!selectedData) return null;
+        const out = {};
+        Object.keys(selectedData).forEach((key) => {
+          const m = selectedData[key];
+          const cpc = key === "googlesa" ? calcActualCpc(key, m.adSpend, m.baseCpc, m.baseAdSpend) : m.cpc;
+
+          const impressions = Math.round((m.adSpend / m.cpm) * 1000);
+          const clicks = Math.round(m.adSpend / cpc);
+          const ctr = impressions > 0 ? (clicks / impressions) * 100 : 0;
+          const fl = Math.round(clicks * (m.flRate / 100));
+          const cpa = fl > 0 ? Math.round(m.adSpend / fl) : 0;
+          const flComplete = Math.round(fl * (m.flCompleteRate / 100));
+          const purchases = Math.round(flComplete * (m.purchaseRate / 100));
+          const cps = purchases > 0 ? Math.round(m.adSpend / purchases) : 0;
+
+          out[key] = { ...m, cpc, impressions, clicks, ctr, fl, cpa, flComplete, purchases, cps };
+        });
+        return out;
+      }, [selectedVersion, versionHistory]);
+
+      const selectedTotals = useMemo(() => {
+        if (!selectedCalculated) return null;
+        const vals = Object.values(selectedCalculated);
+        const adSpend = vals.reduce((s, v) => s + v.adSpend, 0);
+        const impressions = vals.reduce((s, v) => s + v.impressions, 0);
+        const clicks = vals.reduce((s, v) => s + v.clicks, 0);
+        const fl = vals.reduce((s, v) => s + v.fl, 0);
+        const flComplete = vals.reduce((s, v) => s + v.flComplete, 0);
+        const purchases = vals.reduce((s, v) => s + v.purchases, 0);
+
+        return {
+          adSpend,
+          impressions,
+          clicks,
+          ctr: impressions > 0 ? ((clicks / impressions) * 100).toFixed(2) : "0.00",
+          fl,
+          cpa: fl > 0 ? Math.round(adSpend / fl) : 0,
+          flComplete,
+          flCompleteRate: fl > 0 ? ((flComplete / fl) * 100).toFixed(1) : "0.0",
+          purchases,
+          purchaseRate: flComplete > 0 ? ((purchases / flComplete) * 100).toFixed(1) : "0.0",
+          cps: purchases > 0 ? Math.round(adSpend / purchases) : 0,
+        };
+      }, [selectedCalculated]);
+
+      // 차이 계산
+      const diffs = useMemo(() => {
+        if (!selectedCalculated) return null;
+        const out = {};
+        Object.keys(calculated).forEach((key) => {
+          const curr = calculated[key];
+          const sel = selectedCalculated[key];
+          out[key] = {
+            purchasesDiff: curr.purchases - sel.purchases,
+            cpaDiff: curr.cpa - sel.cpa,
+            cpsDiff: curr.cps - sel.cps,
+          };
+        });
+        return out;
+      }, [calculated, selectedCalculated]);
+
+      const totalsDiff = useMemo(() => {
+        if (!selectedTotals) return null;
+        return {
+          purchasesDiff: totals.purchases - selectedTotals.purchases,
+          cpaDiff: totals.cpa - selectedTotals.cpa,
+          cpsDiff: totals.cps - selectedTotals.cps,
+        };
+      }, [totals, selectedTotals]);
 
       // 파이 차트 렌더링
       useEffect(() => {
@@ -405,7 +438,7 @@
 
       return (
         <div className="p-6 max-w-7xl mx-auto">
-          <h1 className="text-2xl font-bold mb-4">유폰 미디어믹스 대시보드</h1>
+          <h1 className="text-2xl font-bold mb-4">유폰 9월 미디어믹스 대시보드</h1>
           {/* 차트 영역 */}
           <div className="grid md:grid-cols-3 gap-4 mb-6">
             <div>
@@ -624,12 +657,30 @@
                     <Td>{calculated[key].cps.toLocaleString()}원</Td>
                   </tr>
                 ))}
+                {/* 합계 행 추가 */}
+                <tr className="border-t font-bold bg-gray-100">
+                  <Td>합계</Td>
+                  <Td>{totals.adSpend.toLocaleString()}원</Td>
+                  <Td>-</Td>
+                  <Td>-</Td>
+                  <Td>-</Td>
+                  <Td>{totals.flCompleteRate}%</Td>
+                  <Td>{totals.purchaseRate}%</Td>
+                  <Td>{totals.impressions.toLocaleString()}</Td>
+                  <Td>{totals.clicks.toLocaleString()}</Td>
+                  <Td>{totals.ctr}%</Td>
+                  <Td>{totals.fl.toLocaleString()}</Td>
+                  <Td>{totals.cpa.toLocaleString()}원</Td>
+                  <Td>{totals.flComplete.toLocaleString()}</Td>
+                  <Td>{totals.purchases.toLocaleString()}</Td>
+                  <Td>{totals.cps.toLocaleString()}원</Td>
+                </tr>
               </tbody>
             </table>
           </div>
           {/* 버전 비교 테이블 */}
           {selectedVersion && (
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto mb-6">
               <h2 className="text-lg font-bold mb-2">선택한 버전 데이터 ({versionHistory.find(v => v.id === selectedVersion)?.label})</h2>
               <table className="w-full text-sm border">
                 <thead>
@@ -652,38 +703,88 @@
                   </tr>
                 </thead>
                 <tbody>
-                  {Object.keys(versionHistory.find(v => v.id === selectedVersion)?.data || {}).map((key) => {
-                    const m = versionHistory.find(v => v.id === selectedVersion).data[key];
-                    const cpc = key === "googlesa" ? calcActualCpc(key, m.adSpend, m.baseCpc, m.baseAdSpend) : m.cpc;
-                    const impressions = Math.round((m.adSpend / m.cpm) * 1000);
-                    const clicks = Math.round(m.adSpend / cpc);
-                    const ctr = impressions > 0 ? (clicks / impressions) * 100 : 0;
-                    const fl = Math.round(clicks * (m.flRate / 100));
-                    const cpa = fl > 0 ? Math.round(m.adSpend / fl) : 0;
-                    const flComplete = Math.round(fl * (m.flCompleteRate / 100));
-                    const purchases = Math.round(flComplete * (m.purchaseRate / 100));
-                    const cps = purchases > 0 ? Math.round(m.adSpend / purchases) : 0;
-
-                    return (
-                      <tr key={key} className="border-t">
-                        <Td bold>{m.name}</Td>
-                        <Td>{m.adSpend.toLocaleString()}</Td>
-                        <Td>{cpc.toLocaleString()}</Td>
-                        <Td>{m.cpm.toLocaleString()}</Td>
-                        <Td>{m.flRate.toFixed(2)}</Td>
-                        <Td>{m.flCompleteRate.toFixed(2)}</Td>
-                        <Td>{m.purchaseRate.toFixed(2)}</Td>
-                        <Td>{impressions.toLocaleString()}</Td>
-                        <Td>{clicks.toLocaleString()}</Td>
-                        <Td>{ctr.toFixed(2)}%</Td>
-                        <Td>{fl.toLocaleString()}</Td>
-                        <Td>{cpa.toLocaleString()}원</Td>
-                        <Td>{flComplete.toLocaleString()}</Td>
-                        <Td>{purchases.toLocaleString()}</Td>
-                        <Td>{cps.toLocaleString()}원</Td>
-                      </tr>
-                    );
-                  })}
+                  {Object.keys(selectedCalculated || {}).map((key) => (
+                    <tr key={key} className="border-t">
+                      <Td bold>{selectedCalculated[key].name}</Td>
+                      <Td>{selectedCalculated[key].adSpend.toLocaleString()}</Td>
+                      <Td>{selectedCalculated[key].cpc.toLocaleString()}</Td>
+                      <Td>{selectedCalculated[key].cpm.toLocaleString()}</Td>
+                      <Td>{selectedCalculated[key].flRate.toFixed(2)}</Td>
+                      <Td>{selectedCalculated[key].flCompleteRate.toFixed(2)}</Td>
+                      <Td>{selectedCalculated[key].purchaseRate.toFixed(2)}</Td>
+                      <Td>{selectedCalculated[key].impressions.toLocaleString()}</Td>
+                      <Td>{selectedCalculated[key].clicks.toLocaleString()}</Td>
+                      <Td>{selectedCalculated[key].ctr.toFixed(2)}%</Td>
+                      <Td>{selectedCalculated[key].fl.toLocaleString()}</Td>
+                      <Td>{selectedCalculated[key].cpa.toLocaleString()}원</Td>
+                      <Td>{selectedCalculated[key].flComplete.toLocaleString()}</Td>
+                      <Td>{selectedCalculated[key].purchases.toLocaleString()}</Td>
+                      <Td>{selectedCalculated[key].cps.toLocaleString()}원</Td>
+                    </tr>
+                  ))}
+                  {/* 선택 버전 합계 행 추가 */}
+                  <tr className="border-t font-bold bg-gray-100">
+                    <Td>합계</Td>
+                    <Td>{selectedTotals.adSpend.toLocaleString()}원</Td>
+                    <Td>-</Td>
+                    <Td>-</Td>
+                    <Td>-</Td>
+                    <Td>{selectedTotals.flCompleteRate}%</Td>
+                    <Td>{selectedTotals.purchaseRate}%</Td>
+                    <Td>{selectedTotals.impressions.toLocaleString()}</Td>
+                    <Td>{selectedTotals.clicks.toLocaleString()}</Td>
+                    <Td>{selectedTotals.ctr}%</Td>
+                    <Td>{selectedTotals.fl.toLocaleString()}</Td>
+                    <Td>{selectedTotals.cpa.toLocaleString()}원</Td>
+                    <Td>{selectedTotals.flComplete.toLocaleString()}</Td>
+                    <Td>{selectedTotals.purchases.toLocaleString()}</Td>
+                    <Td>{selectedTotals.cps.toLocaleString()}원</Td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+          {/* 버전별 상세 비교 섹션 */}
+          {selectedVersion && (
+            <div className="overflow-x-auto">
+              <h2 className="text-lg font-bold mb-2">현재 버전 vs 선택 버전 비교 (차이: 현재 - 선택)</h2>
+              <table className="w-full text-sm border">
+                <thead>
+                  <tr className="bg-gray-50">
+                    <Th>채널</Th>
+                    <Th>구매수 차이</Th>
+                    <Th>CPA 차이</Th>
+                    <Th>CPS 차이</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.keys(diffs || {}).map((key) => (
+                    <tr key={key} className="border-t">
+                      <Td bold>{calculated[key].name}</Td>
+                      <Td className={diffs[key].purchasesDiff > 0 ? "text-green-600" : diffs[key].purchasesDiff < 0 ? "text-red-600" : ""}>
+                        {diffs[key].purchasesDiff.toLocaleString()}건
+                      </Td>
+                      <Td className={diffs[key].cpaDiff > 0 ? "text-red-600" : diffs[key].cpaDiff < 0 ? "text-green-600" : ""}>
+                        {diffs[key].cpaDiff.toLocaleString()}원
+                      </Td>
+                      <Td className={diffs[key].cpsDiff > 0 ? "text-red-600" : diffs[key].cpsDiff < 0 ? "text-green-600" : ""}>
+                        {diffs[key].cpsDiff.toLocaleString()}원
+                      </Td>
+                    </tr>
+                  ))}
+                  {/* 합계 차이 행 */}
+                  <tr className="border-t font-bold bg-gray-100">
+                    <Td>합계</Td>
+                    <Td className={totalsDiff.purchasesDiff > 0 ? "text-green-600" : totalsDiff.purchasesDiff < 0 ? "text-red-600" : ""}>
+                      {totalsDiff.purchasesDiff.toLocaleString()}건
+                    </Td>
+                    <Td className={totalsDiff.cpaDiff > 0 ? "text-red-600" : totalsDiff.cpaDiff < 0 ? "text-green-600" : ""}>
+                      {totalsDiff.cpaDiff.toLocaleString()}원
+                    </Td>
+                    <Td className={totalsDiff.cpsDiff > 0 ? "text-red-600" : totalsDiff.cpsDiff < 0 ? "text-green-600" : ""}>
+                      {totalsDiff.cpsDiff.toLocaleString()}원
+                    </Td>
+                  </tr>
                 </tbody>
               </table>
             </div>
